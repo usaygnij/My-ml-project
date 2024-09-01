@@ -1,0 +1,258 @@
+import re
+import spacy
+import streamlit as st
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import plotly.express as px
+import smtplib
+from email.mime.text import MIMEText
+import fitz  # PyMuPDF
+
+# Load spaCy model
+nlp = spacy.load('en_core_web_sm')
+
+# Function to extract text from PDF
+def extract_text_from_pdf(pdf_file):
+    text = ""
+    pdf_document = fitz.open(stream=pdf_file, filetype="pdf")
+    for page in pdf_document:
+        text += page.get_text()
+    pdf_document.close()
+    return text
+
+# Function to extract specific sections from resume text
+def extract_sections(text):
+    sections = {
+        'Education': '',
+        'Skills': '',
+        'Contact': {'Email': [], 'Phone': []},
+        'Name': '',
+    }
+    
+    # Split into sections based on common section headers
+    for section in ['Education', 'Skills']:
+        pattern = re.compile(r'{}[\s\S]*?(?=\n[A-Z])'.format(section), re.IGNORECASE)
+        match = pattern.search(text)
+        if match:
+            sections[section] = match.group(0)
+    
+    # Extract name using spaCy
+    doc = nlp(text)
+    name_entities = [ent.text for ent in doc.ents if ent.label_ == 'PERSON']
+    if name_entities:
+        sections['Name'] = ' '.join(name_entities)
+    
+    # Extract contact details using regex
+    email_pattern = re.compile(r'\S+@\S+')
+    phone_pattern = re.compile(r'\+?\d[\d -]{8,12}\d')
+    sections['Contact'] = {
+        'Email': email_pattern.findall(text),
+        'Phone': phone_pattern.findall(text)
+    }
+
+    return sections
+
+# Function to extract education details
+def extract_education(education_text):
+    education_details = []
+    
+    # Example regex patterns for education details
+    level_pattern = re.compile(r'(?:\b(?:Intermediate|\+2|Matriculation|High School|Bachelor|Master|PhD)\b)', re.IGNORECASE)
+    institution_pattern = re.compile(r'(?<=\n)([A-Z][A-Za-z ]+)(?=\n)', re.IGNORECASE)
+    marks_pattern = re.compile(r'(\d{1,2}%|[A-Za-z]+\s*\d*\.\d+|\d+)', re.IGNORECASE)
+    
+    levels = level_pattern.findall(education_text)
+    institutions = institution_pattern.findall(education_text)
+    marks = marks_pattern.findall(education_text)
+    
+    # Compile education details
+    for i in range(len(levels)):
+        education_detail = {}
+        education_detail['Level'] = levels[i] if i < len(levels) else 'N/A'
+        education_detail['Institution'] = institutions[i] if i < len(institutions) else 'N/A'
+        education_detail['Marks'] = marks[i] if i < len(marks) else 'N/A'
+        education_details.append(education_detail)
+    
+    return education_details
+
+
+# Function to extract skills details
+def extract_skills(skills_text):
+    skills_details = []
+    
+    # Example regex patterns for skills
+    sections = [
+        'Programming', 'General Programming', 'Software', 'Software and Tools', 'Databases', 
+        'Python Frameworks', 'Python Libraries', 'Python Packages'
+    ]
+    
+    for section in sections:
+        section_pattern = re.compile(r'{}[\s\S]*?(?=\n[A-Z])'.format(section), re.IGNORECASE)
+        match = section_pattern.search(skills_text)
+        if match:
+            skills_details.append({
+                'Section': section,
+                'Details': match.group(0).strip()
+            })
+    
+    # Extract language skills and filter them out
+    language_pattern = re.compile(r'\b(?:English|Marathi|Japanese|Odia|Tamil)\b', re.IGNORECASE)
+    languages = language_pattern.findall(skills_text)
+    
+    return skills_details, languages
+
+# Set page configuration
+st.set_page_config(page_title="AI-Powered Recruitment Agent", layout="wide")
+
+# Sidebar navigation
+st.sidebar.title("Navigation")
+app_mode = st.sidebar.selectbox("Choose the functionality", 
+                                ["Home", "Resume Parsing", "Candidate Matching", "Automated Messaging", "Interview Scheduling"])
+
+# Home Page
+if app_mode == "Home":
+    st.title("🤖 AI-Powered Recruitment Agent")
+    st.markdown("""
+    Welcome to the AI-Powered Recruitment Agent application. This tool helps recruiting teams streamline the hiring process by leveraging artificial intelligence for tasks such as:
+    - Parsing and extracting information from resumes.
+    - Matching candidates to job descriptions.
+    - Sending automated messages to candidates.
+    - Scheduling interviews seamlessly.
+
+    Use the navigation menu on the left to access different functionalities.
+    """)
+
+# Resume Parsing
+elif app_mode == "Resume Parsing":
+    st.title("📄 Resume Parsing")
+    st.markdown("Upload a resume to extract structured information like **Name**, **Email**, **Phone Number**, **Education**, and **Skills**.")
+
+    uploaded_file = st.file_uploader("Choose a resume file", type=["pdf"])
+
+    if uploaded_file is not None:
+        # Extract text from the PDF
+        resume_text = extract_text_from_pdf(uploaded_file.read())
+
+        # Extract sections
+        sections = extract_sections(resume_text)
+        education_text = sections.get('Education', '')
+        skills_text = sections.get('Skills', '')
+
+        # Extract education details
+        education_details = extract_education(education_text)
+        skills_details, languages = extract_skills(skills_text)
+
+        # Display extracted information
+        st.subheader("Extracted Information")
+
+        # Display name
+        st.write(f"**Name:** {sections['Name'] if sections['Name'] else 'Not found'}")
+
+        # Display contact details
+        st.write(f"**Email:** {', '.join(sections['Contact']['Email']) if sections['Contact']['Email'] else 'Not found'}")
+        st.write(f"**Phone Number:** {', '.join(sections['Contact']['Phone']) if sections['Contact']['Phone'] else 'Not found'}")
+
+        # Display education details
+        st.subheader("Education")
+        for detail in education_details:
+            st.write(f"**Level:** {detail['Level']}")
+            st.write(f"**Institution:** {detail['Institution']}")
+            st.write(f"**Marks:** {detail['Marks']}")
+            st.write("---")
+
+        # Display skills details
+        st.subheader("Skills")
+        for detail in skills_details:
+            st.write(f"**Section:** {detail['Section']}")
+            st.write(f"**Details:** {detail['Details']}")
+            st.write("---")
+
+        # Display languages (filtered out from skills)
+        if languages:
+            st.write(f"**Languages (Filtered from Skills):** {', '.join(languages)}")
+
+# Candidate Matching
+elif app_mode == "Candidate Matching":
+    st.title("🔍 Candidate Matching")
+    st.markdown("Match candidate resumes to job descriptions using TF-IDF and cosine similarity.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Job Description")
+        job_description = st.text_area("Enter the job description here")
+
+    with col2:
+        st.subheader("Candidate Resumes")
+        resumes_text = st.text_area("Enter candidate resumes here (separate multiple resumes with '---')")
+
+    if st.button("Match Candidates") and job_description and resumes_text:
+        resumes = resumes_text.split('---')
+        documents = [job_description] + resumes
+
+        # Vectorize texts
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform(documents)
+
+        # Compute cosine similarity
+        cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+
+        # Create a dataframe with results
+        results = pd.DataFrame({
+            'Resume': resumes,
+            'Match Score': cosine_sim
+        })
+
+        # Sort results
+        results = results.sort_values(by='Match Score', ascending=False).reset_index(drop=True)
+
+        st.subheader("Matching Results")
+        st.write(results)
+
+        # Visualization
+        fig = px.bar(results, x='Match Score', y=results.index, orientation='h', color='Match Score',
+                     labels={'y':'Candidate', 'Match Score':'Similarity Score'}, height=400)
+        st.plotly_chart(fig)
+
+# Automated Messaging
+elif app_mode == "Automated Messaging":
+    st.title("✉️ Automated Messaging")
+    st.markdown("Send automated emails to candidates.")
+
+    with st.form(key='email_form'):
+        recipient_email = st.text_input("Candidate's Email Address")
+        candidate_name = st.text_input("Candidate's Name")
+        job_title = st.text_input("Job Title")
+        message_body = st.text_area("Custom Message", value=f"Dear {candidate_name},\n\nWe are pleased to inform you that you have been shortlisted for the {job_title} position. We will contact you soon with more details.\n\nBest regards,\nRecruitment Team")
+        submit_button = st.form_submit_button(label='Send Email')
+
+    if submit_button:
+        if recipient_email and candidate_name and job_title and message_body:
+            try:
+                # Setup the MIME
+                message = MIMEText(message_body, 'plain')
+                message['Subject'] = f"Application Update: {job_title} Position"
+                message['From'] = "your_email@example.com"  # Replace with your email address
+                message['To'] = recipient_email
+
+                # Create SMTP session
+                session = smtplib.SMTP('smtp.gmail.com', 587) # Use appropriate SMTP server and port
+                session.starttls() # Enable security
+                session.login("your_email@example.com", "your_password") # Replace with your email login and app password
+                text = message.as_string()
+                session.sendmail("your_email@example.com", recipient_email, text)
+                session.quit()
+
+                st.success(f"Email successfully sent to {recipient_email}")
+            except Exception as e:
+                st.error(f"Error sending email: {e}")
+        else:
+            st.warning("Please fill out all fields")
+
+# Interview Scheduling
+elif app_mode == "Interview Scheduling":
+    st.title("📅 Interview Scheduling")
+    st.markdown("Schedule interviews with candidates and send calendar invites.")
+    st.markdown("This feature requires integration with a calendar API like Google Calendar.")
+    st.warning("Interview Scheduling functionality is not implemented in this demo.")
